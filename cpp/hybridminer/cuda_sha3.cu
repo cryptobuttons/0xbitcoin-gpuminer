@@ -28,6 +28,7 @@ based off of https://github.com/Dunhili/SHA3-gpu-brute-force-cracker/blob/master
  */
 
 #include "cudasolver.h"
+#include "cuda_helper.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -56,6 +57,7 @@ int cuda_device;
 int clock_speed;
 int compute_version;
 int h_done[1] = { 0 };
+bool gpu_initialized;
 clock_t start;
 
 unsigned long long cnt;
@@ -78,36 +80,37 @@ unsigned char* d_hash_prefix;
 
 #define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
 
+__device__ bool compare_hash( unsigned char *target, unsigned char *hash, int length )
+{
+  for( int i = 0; i < length; i++ )
+  {
+    if( hash[i] < target[i] )
+      return true;
+  }
+  return false;
+}
+
+#if 1
 __device__ const uint64_t RC[24] = {
-    0x0000000000000001, 0x0000000000008082, 0x800000000000808a,
-    0x8000000080008000, 0x000000000000808b, 0x0000000080000001,
-    0x8000000080008081, 0x8000000000008009, 0x000000000000008a,
-    0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
-    0x000000008000808b, 0x800000000000008b, 0x8000000000008089,
-    0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
-    0x000000000000800a, 0x800000008000000a, 0x8000000080008081,
-    0x8000000000008080, 0x0000000080000001, 0x8000000080008008
+  0x0000000000000001, 0x0000000000008082, 0x800000000000808a,
+  0x8000000080008000, 0x000000000000808b, 0x0000000080000001,
+  0x8000000080008081, 0x8000000000008009, 0x000000000000008a,
+  0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
+  0x000000008000808b, 0x800000000000008b, 0x8000000000008089,
+  0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
+  0x000000000000800a, 0x800000008000000a, 0x8000000080008081,
+  0x8000000000008080, 0x0000000080000001, 0x8000000080008008
 };
 
 __device__ const int r[24] = {
-    1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
-    27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44
+  1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
+  27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44
 };
 
 __device__ const int piln[24] = {
-    10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
-    15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1
+  10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
+  15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1
 };
-
-__device__ int compare_hash( unsigned char *target, unsigned char *hash, int length )
-{
-  int i = 0;
-  for( i = 0; i < length; i++ )
-  {
-    if( hash[i] != target[i] )break;
-  }
-  return (unsigned char)( hash[i] ) < (unsigned char)( target[i] );
-}
 
 __device__ void keccak( const unsigned char *message, int message_len, unsigned char *output, int output_len )
 {
@@ -361,6 +364,281 @@ __device__ void keccak( const unsigned char *message, int message_len, unsigned 
   memcpy( output, state, output_len );
 }
 
+#else
+
+__constant__ uint2 keccak_round_constants[24] = {
+  { 0x00000001, 0x00000000 },{ 0x00008082, 0x00000000 },{ 0x0000808a, 0x80000000 },{ 0x80008000, 0x80000000 },
+{ 0x0000808b, 0x00000000 },{ 0x80000001, 0x00000000 },{ 0x80008081, 0x80000000 },{ 0x00008009, 0x80000000 },
+{ 0x0000008a, 0x00000000 },{ 0x00000088, 0x00000000 },{ 0x80008009, 0x00000000 },{ 0x8000000a, 0x00000000 },
+{ 0x8000808b, 0x00000000 },{ 0x0000008b, 0x80000000 },{ 0x00008089, 0x80000000 },{ 0x00008003, 0x80000000 },
+{ 0x00008002, 0x80000000 },{ 0x00000080, 0x80000000 },{ 0x0000800a, 0x00000000 },{ 0x8000000a, 0x80000000 },
+{ 0x80008081, 0x80000000 },{ 0x00008080, 0x80000000 },{ 0x80000001, 0x00000000 },{ 0x80008008, 0x80000000 }
+};
+
+__device__ __forceinline__
+uint2 xor3( const uint2 a, const uint2 b, const uint2 c )
+{
+  uint2 result;
+#if __CUDA_ARCH__ >= 500 && CUDA_VERSION >= 7050
+  asm( "lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"( result.x ) : "r"( a.x ), "r"( b.x ), "r"( c.x ) ); //0x96 = 0xF0 ^ 0xCC ^ 0xAA
+  asm( "lop3.b32 %0, %1, %2, %3, 0x96;" : "=r"( result.y ) : "r"( a.y ), "r"( b.y ), "r"( c.y ) ); //0x96 = 0xF0 ^ 0xCC ^ 0xAA
+#else
+  result = a ^ b^c;
+#endif
+  return result;
+}
+
+__device__ __forceinline__
+uint2 chi( const uint2 a, const uint2 b, const uint2 c )
+{ // keccak chi
+  uint2 result;
+#if __CUDA_ARCH__ >= 500 && CUDA_VERSION >= 7050
+  asm( "lop3.b32 %0, %1, %2, %3, 0xD2;" : "=r"( result.x ) : "r"( a.x ), "r"( b.x ), "r"( c.x ) ); //0xD2 = 0xF0 ^ ((~0xCC) & 0xAA)
+  asm( "lop3.b32 %0, %1, %2, %3, 0xD2;" : "=r"( result.y ) : "r"( a.y ), "r"( b.y ), "r"( c.y ) ); //0xD2 = 0xF0 ^ ((~0xCC) & 0xAA)
+#else
+  result = a ^ ( ~b ) & c;
+#endif
+  return result;
+}
+
+__device__ __forceinline__
+uint64_t xor5( uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e )
+{
+  uint64_t result;
+  asm( "xor.b64 %0, %1, %2;" : "=l"( result ) : "l"( d ), "l"( e ) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"( result ) : "l"( c ) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"( result ) : "l"( b ) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"( result ) : "l"( a ) );
+  return result;
+}
+
+__device__ __forceinline__
+uint2 xor5( const uint2 a, const uint2 b, const uint2 c, const uint2 d, const uint2 e )
+{
+  return a ^ b ^ c ^ d ^ e;
+}
+
+__device__ __forceinline__ void keccak256( uint2* s )
+{
+  uint2 t[5], u, v;
+
+  for( uint32_t i = 8; i < 25; i++ )
+  {
+    s[i] = make_uint2( 0, 0 );
+  }
+  s[8].x = 1;
+  s[8].y = 0x80000000;
+
+  for( int i = 0; i < 23; i++ )
+  {
+    /* theta: c = a[0,i] ^ a[1,i] ^ .. a[4,i] */
+    t[0] = xor5( s[0], s[5], s[10], s[15], s[20] );
+    t[1] = xor5( s[1], s[6], s[11], s[16], s[21] );
+    t[2] = xor5( s[2], s[7], s[12], s[17], s[22] );
+    t[3] = xor5( s[3], s[8], s[13], s[18], s[23] );
+    t[4] = xor5( s[4], s[9], s[14], s[19], s[24] );
+
+    /* theta: d[i] = c[i+4] ^ rotl(c[i+1],1) */
+    /* theta: a[0,i], a[1,i], .. a[4,i] ^= d[i] */
+
+    u = ROL2( t[1], 1 );
+    s[0] = xor3( s[0], t[4], u );
+    s[5] = xor3( s[5], t[4], u );
+    s[10] = xor3( s[10], t[4], u );
+    s[15] = xor3( s[15], t[4], u );
+    s[20] = xor3( s[20], t[4], u );
+
+    u = ROL2( t[2], 1 );
+    s[1] = xor3( s[1], t[0], u );
+    s[6] = xor3( s[6], t[0], u );
+    s[11] = xor3( s[11], t[0], u );
+    s[16] = xor3( s[16], t[0], u );
+    s[21] = xor3( s[21], t[0], u );
+
+    u = ROL2( t[3], 1 );
+    s[2] = xor3( s[2], t[1], u );
+    s[7] = xor3( s[7], t[1], u );
+    s[12] = xor3( s[12], t[1], u );
+    s[17] = xor3( s[17], t[1], u );
+    s[22] = xor3( s[22], t[1], u );
+
+    u = ROL2( t[4], 1 );
+    s[3] = xor3( s[3], t[2], u );
+    s[8] = xor3( s[8], t[2], u );
+    s[13] = xor3( s[13], t[2], u );
+    s[18] = xor3( s[18], t[2], u );
+    s[23] = xor3( s[23], t[2], u );
+
+
+    u = ROL2( t[0], 1 );
+    s[4] = xor3( s[4], t[3], u );
+    s[9] = xor3( s[9], t[3], u );
+    s[14] = xor3( s[14], t[3], u );
+    s[19] = xor3( s[19], t[3], u );
+    s[24] = xor3( s[24], t[3], u );
+
+    /* rho pi: b[..] = rotl(a[..], ..) */
+    u = s[1];
+
+    s[1] = ROL2( s[6], 44 );
+    s[6] = ROL2( s[9], 20 );
+    s[9] = ROL2( s[22], 61 );
+    s[22] = ROL2( s[14], 39 );
+    s[14] = ROL2( s[20], 18 );
+    s[20] = ROL2( s[2], 62 );
+    s[2] = ROL2( s[12], 43 );
+    s[12] = ROL2( s[13], 25 );
+    s[13] = ROL2( s[19], 8 );
+    s[19] = ROL2( s[23], 56 );
+    s[23] = ROL2( s[15], 41 );
+    s[15] = ROL2( s[4], 27 );
+    s[4] = ROL2( s[24], 14 );
+    s[24] = ROL2( s[21], 2 );
+    s[21] = ROL2( s[8], 55 );
+    s[8] = ROL2( s[16], 45 );
+    s[16] = ROL2( s[5], 36 );
+    s[5] = ROL2( s[3], 28 );
+    s[3] = ROL2( s[18], 21 );
+    s[18] = ROL2( s[17], 15 );
+    s[17] = ROL2( s[11], 10 );
+    s[11] = ROL2( s[7], 6 );
+    s[7] = ROL2( s[10], 3 );
+    s[10] = ROL2( u, 1 );
+
+    /* chi: a[i,j] ^= ~b[i,j+1] & b[i,j+2] */
+    u = s[0]; v = s[1];
+    s[0] = chi( s[0], s[1], s[2] );
+    s[1] = chi( s[1], s[2], s[3] );
+    s[2] = chi( s[2], s[3], s[4] );
+    s[3] = chi( s[3], s[4], u );
+    s[4] = chi( s[4], u, v );
+
+    u = s[5]; v = s[6];
+    s[5] = chi( s[5], s[6], s[7] );
+    s[6] = chi( s[6], s[7], s[8] );
+    s[7] = chi( s[7], s[8], s[9] );
+    s[8] = chi( s[8], s[9], u );
+    s[9] = chi( s[9], u, v );
+
+    u = s[10]; v = s[11];
+    s[10] = chi( s[10], s[11], s[12] );
+    s[11] = chi( s[11], s[12], s[13] );
+    s[12] = chi( s[12], s[13], s[14] );
+    s[13] = chi( s[13], s[14], u );
+    s[14] = chi( s[14], u, v );
+
+    u = s[15]; v = s[16];
+    s[15] = chi( s[15], s[16], s[17] );
+    s[16] = chi( s[16], s[17], s[18] );
+    s[17] = chi( s[17], s[18], s[19] );
+    s[18] = chi( s[18], s[19], u );
+    s[19] = chi( s[19], u, v );
+
+    u = s[20]; v = s[21];
+    s[20] = chi( s[20], s[21], s[22] );
+    s[21] = chi( s[21], s[22], s[23] );
+    s[22] = chi( s[22], s[23], s[24] );
+    s[23] = chi( s[23], s[24], u );
+    s[24] = chi( s[24], u, v );
+
+    /* iota: a[0,0] ^= round constant */
+    s[0] ^= keccak_round_constants[i];
+  }
+
+  /* theta: c = a[0,i] ^ a[1,i] ^ .. a[4,i] */
+  t[0] = xor5( s[0], s[5], s[10], s[15], s[20] );
+  t[1] = xor5( s[1], s[6], s[11], s[16], s[21] );
+  t[2] = xor5( s[2], s[7], s[12], s[17], s[22] );
+  t[3] = xor5( s[3], s[8], s[13], s[18], s[23] );
+  t[4] = xor5( s[4], s[9], s[14], s[19], s[24] );
+
+  /* theta: d[i] = c[i+4] ^ rotl(c[i+1],1) */
+  /* theta: a[0,i], a[1,i], .. a[4,i] ^= d[i] */
+
+  u = ROL2( t[1], 1 );
+  s[0] = xor3( s[0], t[4], u );
+  s[10] = xor3( s[10], t[4], u );
+
+  u = ROL2( t[2], 1 );
+  s[6] = xor3( s[6], t[0], u );
+  s[16] = xor3( s[16], t[0], u );
+
+  u = ROL2( t[3], 1 );
+  s[12] = xor3( s[12], t[1], u );
+  s[22] = xor3( s[22], t[1], u );
+
+  u = ROL2( t[4], 1 );
+  s[3] = xor3( s[3], t[2], u );
+  s[18] = xor3( s[18], t[2], u );
+
+  u = ROL2( t[0], 1 );
+  s[9] = xor3( s[9], t[3], u );
+  s[24] = xor3( s[24], t[3], u );
+
+  /* rho pi: b[..] = rotl(a[..], ..) */
+  u = s[1];
+
+  s[1] = ROL2( s[6], 44 );
+  s[6] = ROL2( s[9], 20 );
+  s[9] = ROL2( s[22], 61 );
+  s[2] = ROL2( s[12], 43 );
+  s[4] = ROL2( s[24], 14 );
+  s[8] = ROL2( s[16], 45 );
+  s[5] = ROL2( s[3], 28 );
+  s[3] = ROL2( s[18], 21 );
+  s[7] = ROL2( s[10], 3 );
+
+  /* chi: a[i,j] ^= ~b[i,j+1] & b[i,j+2] */
+
+  u = s[0]; v = s[1];
+  s[0] = chi( s[0], s[1], s[2] );
+  s[1] = chi( s[1], s[2], s[3] );
+  s[2] = chi( s[2], s[3], s[4] );
+  s[3] = chi( s[3], s[4], u );
+  s[4] = chi( s[4], u, v );
+  s[5] = chi( s[5], s[6], s[7] );
+  s[6] = chi( s[6], s[7], s[8] );
+  s[7] = chi( s[7], s[8], s[9] );
+
+  /* iota: a[0,0] ^= round constant */
+  s[0] ^= keccak_round_constants[23];
+}
+
+__device__ void keccak( const unsigned char *message, int message_len, unsigned char *output, int output_len )
+{
+  uint2 state[25];
+  uint8_t temp_message[144];
+  const int rsize = 136;
+  int rsize_byte = 17;
+
+  memset( state, 0, sizeof( state ) );
+
+  for( ; message_len >= rsize; message_len -= rsize, message += rsize )
+  {
+    for( int i = 0; i < rsize_byte; i++ )
+    {
+      state[i] ^= vectorize( ( (uint64_t *)message )[i] );
+    }
+    keccak256( state );
+  }
+
+  // last block and padding
+  memcpy( temp_message, message, message_len );
+  temp_message[message_len++] = 1;
+  memset( temp_message + message_len, 0, rsize - message_len );
+  temp_message[rsize - 1] |= 0x80;
+
+  for( int i = 0; i < rsize_byte; i++ )
+  {
+    state[i] ^= vectorize( ( (uint64_t *)temp_message )[i] );
+  }
+
+  keccak256( state );
+
+  memcpy( output, state, output_len );
+}
+#endif
+
 // hash length is 256 bits
 #if __CUDA_ARCH__ > 500
 __global__ __launch_bounds__( TPB52, 1 )
@@ -459,13 +737,14 @@ __host__ void gpu_init()
 
   h_message = (unsigned char*)malloc( 84 );
 
-  cudaMalloc( &d_done, sizeof( int ) );
+  cudaMalloc( &d_done, sizeof( int* ) );
   cudaMalloc( &d_solution, 84 ); // solution
   cudaMalloc( &d_challenge_hash, 32 );
   cudaMalloc( &d_hash_prefix, 52 );
 
   //cnt = 0;
   printable_hashrate_cnt = 0;
+  gpu_initialized = true;
 }
 
 __host__ int gcd( int a, int b )
@@ -485,12 +764,12 @@ __host__ void resetHashCount()
 
 __host__ void update_mining_inputs( unsigned char * challenge_target, unsigned char * hash_prefix ) // can accept challenge
 {
-  cudaMalloc( &d_done, sizeof( int ) );
-  cudaMalloc( &d_solution, 84 ); // solution
-  cudaMalloc( &d_challenge_hash, 32 );
-  cudaMalloc( &d_hash_prefix, 52 );
+  if( !gpu_initialized )
+    return;
 
-  cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
+  h_done[0] = 0;
+
+  cudaMemcpy( d_done, h_done, sizeof( int* ), cudaMemcpyHostToDevice );
   cudaMemset( d_solution, 0xff, 84 );
   cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
   cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
@@ -500,12 +779,10 @@ __host__ bool find_message( unsigned char * challenge_target, unsigned char * ha
 {
   h_done[0] = 0;
 
-  cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
+  cudaMemcpy( d_done, h_done, sizeof( int* ), cudaMemcpyHostToDevice );
   cudaMemset( d_solution, 0xff, 84 );
   cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
   cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
-
-  //cudaThreadSetLimit( cudaLimitMallocHeapSize, 2 * ( 84 * number_blocks*number_threads + 32 * number_blocks*number_threads ) );
 
   int now = (int)time( 0 );
   uint32_t threads = 1UL << intensity;
@@ -527,9 +804,10 @@ __host__ bool find_message( unsigned char * challenge_target, unsigned char * ha
   unsigned char init_message[84];
   unsigned char * device_init_message;
 
-  for(int i_rand = 0; i_rand < 21; i_rand++){
-    (int&)init_message[i_rand] = rand();
+  for(int i_rand = 0; i_rand < 84; i_rand++){
+    init_message[i_rand] = (unsigned char)( rand() % 256 );
   }
+
   cudaMalloc( &device_init_message, 84 );
   cudaMemcpy( device_init_message, init_message, 84, cudaMemcpyHostToDevice );
 
@@ -537,15 +815,13 @@ __host__ bool find_message( unsigned char * challenge_target, unsigned char * ha
   cudaError_t cudaerr = cudaDeviceSynchronize();
   if( cudaerr != cudaSuccess )
   {
-    h_done[0] = 1;
-
     printf( "kernel launch failed with error %d: %s.\n", cudaerr, cudaGetErrorString( cudaerr ) );
     exit( EXIT_FAILURE );
   }
   cnt += threads;
   printable_hashrate_cnt += threads;
 
-  cudaMemcpy( h_done, d_done, sizeof( int ), cudaMemcpyDeviceToHost );
+  cudaMemcpy( h_done, d_done, sizeof( int* ), cudaMemcpyDeviceToHost );
   cudaMemcpy( h_message, d_solution, 84, cudaMemcpyDeviceToHost );
 
   clock_t t = clock() - start;
@@ -553,6 +829,7 @@ __host__ bool find_message( unsigned char * challenge_target, unsigned char * ha
   fprintf( stderr, "Hash Rate: %*.2f MH/Second\tTotal hashes: %*llu\n",
            7, ( (double)printable_hashrate_cnt / ( (double)t / CLOCKS_PER_SEC ) / 1000000 ),
            15, printable_hashrate_cnt );
+
   return ( h_done[0] == 1 );
 }
 
@@ -565,4 +842,6 @@ __host__ void gpu_cleanup()
   cudaFree( d_challenge_hash );
   cudaFree( d_hash_prefix );
   free( h_message );
+
+  gpu_initialized = false;
 }

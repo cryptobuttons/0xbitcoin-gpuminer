@@ -82,7 +82,8 @@ m_updated_gpu_inputs( false )
 
 void CUDASolver::setAddress( std::string const& addr )
 {
-  std::cout << "Setting cuda addr " << std::endl;
+  //strcmp -> shortcut out (lock?)
+  //std::cout << "Setting cuda addr " << std::endl;
 
   assert( addr.length() == ( ADDRESS_LENGTH * 2 + 2 ) );
   hexToBytes( addr, m_address );
@@ -94,6 +95,7 @@ void CUDASolver::setAddress( std::string const& addr )
 
 void CUDASolver::setChallenge( std::string const& chal )
 {
+  //strcmp -> shortcut out (lock?)
   //std::cout << "Setting cuda chal " << std::endl;
 
   s_challenge = chal;
@@ -107,7 +109,8 @@ void CUDASolver::setChallenge( std::string const& chal )
 
 void CUDASolver::setTarget( std::string const& target )
 {
-  std::cout << "Setting cuda tar " << target << std::endl;
+  //strcmp -> shortcut out (lock?)
+  //std::cout << "Setting cuda tar " << target << std::endl;
 
   assert( target.length() <= ( UINT256_LENGTH * 2 + 2 ) );
   std::string const t( static_cast<std::string::size_type>( UINT256_LENGTH * 2 + 2 ) - target.length(), '0' );
@@ -278,16 +281,16 @@ CUDASolver::bytes_t CUDASolver::findSolution()
     //cudaDeviceReset();
     cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
 
-    if( !find_message( target_input, hash_prefix ) )
+    if( find_message( target_input, hash_prefix ) )
       continue;
-    //here
+
     for( int i = 52; i < 84; i++ )
     {
       byte_solution[i - 52] = (uint8_t)h_message[i];
 
       //cout << (uint8_t)s_solution[i];
     }
-  } while( !h_done[0] );
+  } while( h_done[0] == 0 );
   gpu_cleanup();
 
   // What are these even here for?
