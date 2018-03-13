@@ -58,8 +58,8 @@ int compute_version;
 int h_done[1] = { 0 };
 clock_t start;
 
-unsigned long long cnt;
-unsigned long long printable_hashrate_cnt;
+uint64_t cnt;
+uint64_t printable_hashrate_cnt;
 
 //int num_messages;
 //const int digest_size = 256;
@@ -70,11 +70,11 @@ unsigned char * h_message;
 
 //cudaEvent_t start, stop;
 
-int* d_done;
-unsigned char* d_solution;
+__device__ int* d_done;
+__device__ unsigned char* d_solution;
 
-unsigned char* d_challenge_hash;
-unsigned char* d_hash_prefix;
+unsigned char* h_challenge_hash;
+__constant__ unsigned char* d_message;
 
 #define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
 
@@ -101,17 +101,23 @@ __device__ const int piln[24] = {
 
 __device__ int compare_hash( unsigned char *target, unsigned char *hash, int length )
 {
-  int i = 0;
-  for( i = 0; i < length; i++ )
+  for( int i = 0; i < length/4; i++ )
   {
-    if( hash[i] != target[i] )break;
+    if( ((uint32_t*)hash)[i] < ((uint32_t*)target)[i] ) return true;
   }
-  return (unsigned char)( hash[i] ) < (unsigned char)( target[i] );
+  return false;
 }
 
-__device__ void keccak( const unsigned char *message, int message_len, unsigned char *output, int output_len )
+__device__ void uchToU64( const unsigned char *in, uint64_t *out )
 {
-  uint64_t state[25];
+  *out = 0;
+  for( int i = 0, j = 7; i < 8; i++, j++ )
+    *out = *out + (in[0] * (1 << (8 * j)));
+}
+
+__device__ void keccak( const unsigned char *message, int message_len, unsigned char *out, int output_len )
+{
+  uint64_t state[25], temp_state[25];
   uint8_t temp_message[144];
   const int rsize = 136;
   const int rsize_byte = 17;
@@ -119,15 +125,18 @@ __device__ void keccak( const unsigned char *message, int message_len, unsigned 
   memset( state, 0, sizeof( state ) );
 
   // last block and padding
-  memcpy( temp_message, message, message_len );
+  for( int i = 0; i < message_len; i++ )
+    temp_message[i] = message[i];
+  //memcpy( temp_message, message, message_len );
   temp_message[message_len++] = 1;
   memset( temp_message + message_len, 0, rsize - message_len );
   temp_message[rsize - 1] |= 0x80;
 
   for( int i = 0; i < rsize_byte; i++ )
-  {
-    state[i] ^= ( (uint64_t *)temp_message )[i];
-  }
+    uchToU64( &temp_message[i*8], &temp_state[i] );
+
+  for( int i = 0; i < rsize_byte; i++ )
+    state[i] ^= temp_state[i];
 
   uint64_t temp, C[5], D[5];
   int j;
@@ -137,7 +146,7 @@ __device__ void keccak( const unsigned char *message, int message_len, unsigned 
     // Theta
     // for i = 0 to 5
     //    C[i] = state[i] ^ state[i + 5] ^ state[i + 10] ^ state[i + 15] ^ state[i + 20];
-    unsigned int x;
+    uint32_t x;
     for (x = 0; x < 5; x++) {
       C[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
     }
@@ -358,7 +367,13 @@ __device__ void keccak( const unsigned char *message, int message_len, unsigned 
     //  Iota
     state[0] ^= RC[i];
   }
-  memcpy( output, state, output_len );
+  memcpy( out, state, output_len );
+  for(int i = 0; i < 32; i++ )
+	  printf("%02x", out[i] );
+  printf("\n");
+  for(int i = 0; i < 25; i++ )
+	  printf("%08x", state[i] );
+  printf("\n");
 }
 
 // hash length is 256 bits
@@ -367,20 +382,27 @@ __global__ __launch_bounds__( TPB52, 1 )
 #else
 __global__ __launch_bounds__( TPB50, 2 )
 #endif
-void gpu_mine( unsigned char * init_message, unsigned char *challenge_hash, int *done, unsigned char * hash_prefix, int now, unsigned long long cnt, unsigned int threads )
+void gpu_mine( unsigned char *challenge_hash, int now, uint64_t cnt, uint32_t threads )
 {
+	__syncthreads();
   uint32_t thread = blockDim.x * blockIdx.x + threadIdx.x;
-  unsigned char message[84];
+  unsigned char *message = (unsigned char*)malloc(84);
   //memset( message, 0x00, 84 );
-  memcpy(message, init_message, 84);
+  memcpy( &message, &d_message, 84 );
+  // for(int i = 0; i < 13; i++ )
+  // 	  ((uint32_t*)message)[i] = ((uint32_t*)d_message)[i];
+
+  // unsigned char target[32];// = (unsigned char*)malloc(84);
+  // for(int i = 0; i < 32; i++ )
+  // 	  target[i] = challenge_hash[i];
 
   int str_len = 84;
 
-  int len = 0;
-  for( len = 0; len < 52; len++ )
-  {
-    message[len] = hash_prefix[len];
-  }
+  //int len = 0;
+  //for( len = 0; len < 52; len++ )
+  //{
+  //  message[len] = hash_prefix[len];
+  //}
 
   //uint2 s[25], t[5], v, w, u[5];
 #if __CUDA_ARCH__ > 500
@@ -388,25 +410,50 @@ void gpu_mine( unsigned char * init_message, unsigned char *challenge_hash, int 
   uint64_t maxNonce = cnt + threads;
   for( uint64_t nounce = cnt + thread; nounce < maxNonce; nounce += step )
   {
+	  // uchar4 temp_nounce[2] = { (unsigned char*)nounce };
+	  // message[52] = temp_nounce[0].x;
+	  // message[53] = temp_nounce[0].y;
+	  // message[54] = temp_nounce[0].z;
+	  // message[55] = temp_nounce[0].w;
+	  // message[56] = temp_nounce[1].x;
+	  // message[57] = temp_nounce[1].y;
+	  // message[58] = temp_nounce[1].z;
+	  // message[59] = temp_nounce[1].w;
 #else
   uint32_t nounce = cnt + thread;
   if( thread < threads )
   {
+	  // uchar4 temp_nounce[1] = { (unsigned char*)nounce },
+	  // message[52] = temp_nounce[0].x;
+	  // message[53] = temp_nounce[0].y;
+	  // message[54] = temp_nounce[0].z;
+	  // message[55] = temp_nounce[0].w;
 #endif
-    (uint64_t&)(message[52]) = nounce;
+	  atomicExch(((uint32_t*)&message)[13], nounce);
 
     const int output_len = 32;
     unsigned char output[output_len];
     keccak( message, str_len, output, output_len );
 
-    if( compare_hash( challenge_hash, output, output_len ) )
+  for(int i = 0; i < 32; i++ )
+	  printf("%02x", output[i] );
+  printf("\n");
+  // for(int i = 0; i < 32; i++ )
+  // 	  printf("%02x", target[i] );
+  // printf("\n");
+
+	for( int i = 0; i < output_len; i++ )
     {
-      if( done[0] != 1 )
+	  if( compare_hash( challenge_hash, output, output_len ) )
       {
-        done[0] = 1;
-        device_solution = message;
+        if( d_done[0] != 1 )
+        {
+          d_done[0] = 1;
+          *d_solution = *message;
+        }
+	    free(message);
+        return;
       }
-      return;
     }
   }
 }
@@ -459,10 +506,10 @@ __host__ void gpu_init()
 
   h_message = (unsigned char*)malloc( 84 );
 
-  cudaMalloc( &d_done, sizeof( int ) );
-  cudaMalloc( &d_solution, 84 ); // solution
-  cudaMalloc( &d_challenge_hash, 32 );
-  cudaMalloc( &d_hash_prefix, 52 );
+  //cudaMalloc( &d_done, sizeof( int ) );
+  //cudaMalloc( &d_solution, 84 ); // solution
+  //cudaMalloc( &d_challenge_hash, 32 );
+  //cudaMalloc( &d_hash_prefix, 52 );
 
   //cnt = 0;
   printable_hashrate_cnt = 0;
@@ -473,7 +520,7 @@ __host__ int gcd( int a, int b )
   return ( a == 0 ) ? b : gcd( b % a, a );
 }
 
-__host__ unsigned long long getHashCount()
+__host__ uint64_t getHashCount()
 {
   return cnt;
 }
@@ -490,20 +537,20 @@ __host__ void update_mining_inputs( unsigned char * challenge_target, unsigned c
   //cudaMalloc( &d_challenge_hash, 32 );
   //cudaMalloc( &d_hash_prefix, 52 );
 
-  cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
-  cudaMemset( d_solution, 0xff, 84 );
-  cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
-  cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
+  //cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
+  //cudaMemset( d_solution, 0xff, 84 );
+  //cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
+  //cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
 }
 
 __host__ bool find_message( unsigned char * challenge_target, unsigned char * hash_prefix ) // can accept challenge
 {
   h_done[0] = 0;
 
-  cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
-  cudaMemset( d_solution, 0xff, 84 );
-  cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
-  cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
+  //cudaMemcpy( d_done, h_done, sizeof( int ), cudaMemcpyHostToDevice );
+  //cudaMemset( d_solution, 0xff, 84 );
+  //cudaMemcpy( d_challenge_hash, challenge_target, 32, cudaMemcpyHostToDevice );
+  //cudaMemcpy( d_hash_prefix, hash_prefix, 52, cudaMemcpyHostToDevice );
 
   //cudaThreadSetLimit( cudaLimitMallocHeapSize, 2 * ( 84 * number_blocks*number_threads + 32 * number_blocks*number_threads ) );
 
@@ -525,26 +572,30 @@ __host__ bool find_message( unsigned char * challenge_target, unsigned char * ha
   const dim3 block( tpb );
 
   unsigned char init_message[84];
-  unsigned char * device_init_message;
+  unsigned char* p_message;
 
-  for(int i_rand = 0; i_rand < 84; i_rand++){
+  for(int i = 0; i < 52; i++)
+    init_message[i] = hash_prefix[i];
+  for(int i_rand = 52; i_rand < 84; i_rand++)
     init_message[i_rand] = rand() % 256;
-  }
-  cudaMalloc( &device_init_message, 84 );
-  cudaMemcpy( device_init_message, init_message, 84, cudaMemcpyHostToDevice );
+  // cudaMalloc( &device_init_message, 84 );
+  // cudaMemcpy( device_init_message, init_message, 84, cudaMemcpyHostToDevice );
+  cudaMallocHost( (void**)&d_message, 84, cudaHostAllocWriteCombined );
+  cudaGetSymbolAddress( (void**)&p_message, d_message );
+  cudaMemcpyToSymbol( p_message, init_message, 84 );
 
-  gpu_mine <<< grid, block >>> (device_init_message, d_challenge_hash, d_solution, d_done, d_hash_prefix, now, cnt, threads );
-  //cudaError_t cudaerr = cudaDeviceSynchronize();
-  //if( cudaerr != cudaSuccess )
-  //{
-  //  printf( "kernel launch failed with error %d: %s.\n", cudaerr, cudaGetErrorString( cudaerr ) );
-  //  exit( EXIT_FAILURE );
-  //}
+  gpu_mine <<< grid, block >>> ( challenge_target, now, cnt, threads );
+  cudaError_t cudaerr = cudaDeviceSynchronize();
+  if( cudaerr != cudaSuccess )
+  {
+    printf( "kernel launch failed with error %d: %s.\n", cudaerr, cudaGetErrorString( cudaerr ) );
+    exit( EXIT_FAILURE );
+  }
   cnt += threads;
   printable_hashrate_cnt += threads;
 
-  cudaMemcpy( h_done, d_done, sizeof( int ), cudaMemcpyDeviceToHost );
-  cudaMemcpy( h_message, d_solution, 84, cudaMemcpyDeviceToHost );
+  cudaMemcpyFromSymbol( h_done, "d_done", sizeof( int ) );
+  cudaMemcpyFromSymbol( h_message, "d_solution", 84 );
 
   clock_t t = clock() - start;
 
@@ -559,9 +610,9 @@ __host__ void gpu_cleanup()
 {
   cudaThreadSynchronize();
 
-  cudaFree( d_done );
-  cudaFree( d_solution );
-  cudaFree( d_challenge_hash );
-  cudaFree( d_hash_prefix );
+  //cudaFree( d_done );
+  //cudaFree( d_solution );
+  //cudaFree( d_challenge_hash );
+  //cudaFree( d_hash_prefix );
   free( h_message );
 }

@@ -16,8 +16,7 @@
       ],
       'conditions': [
 		  [ 'OS=="win"',
-			{'cflags_cc+': [ '-EHsc', '-W3', '-nologo', '-Ox', '-FS',
-                      '-Zi', '-MT', '-I', 'cpp/hybridminer' ],
+			{'cflags_cc+': [ '-EHsc', '-W3', '-nologo', '-MT', '-I', 'cpp/hybridminer' ],
 			},
 			{'cflags_cc+': [ '-march=native', '-O3', '-std=c++11' ],
 			}
@@ -35,9 +34,9 @@
               {'rule_name': 'cuda on windows',
                'message': "compile cuda file on windows",
                'process_outputs_as_sources': 0,
-               'action': ['nvcc -cudart static --machine 64\
+               'action': ['nvcc --machine 64 -lineinfo\
                           -c <(_inputs) -o <(_outputs)',
-                          '-gencode=arch=compute_61,code=compute_61',
+                          '-gencode=arch=compute_61,code=sm_61',
                           '-gencode=arch=compute_52,code=sm_52',
                           '-gencode=arch=compute_35,code=sm_35',
                           '-I', 'cpp/hybridminer'],
