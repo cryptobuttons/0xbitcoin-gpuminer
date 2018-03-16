@@ -244,9 +244,6 @@ CUDASolver::bytes_t CUDASolver::findSolution()
 
   do
   {
-    //cudaDeviceReset();
-    cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
-
     find_message( target_input, hash_prefix );
   } while( !h_done[0] );
 
