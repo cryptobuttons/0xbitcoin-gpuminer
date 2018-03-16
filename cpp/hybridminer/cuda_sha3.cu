@@ -52,6 +52,7 @@ clock_t start;
 
 uint64_t cnt;
 uint64_t printable_hashrate_cnt;
+uint64_t print_counter;
 
 bool gpu_initialized;
 
@@ -449,6 +450,7 @@ void gpu_init()
 
   //cnt = 0;
   printable_hashrate_cnt = 0;
+  print_counter = 0;
 
   gpu_initialized = true;
 }
@@ -524,10 +526,14 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
 
   clock_t t = clock() - start;
 
-  // maybe breaking the control codes into macros is a good idea . . .
-  printf( "\x1b[1A\x1b[37mHash Rate: \x1b[38;5;27m%*.2f \x1b[37mMH/s   Total hashes: \x1b[38;5;27m%*llu\x1b[0m\n",
-           7, ( (double)printable_hashrate_cnt / ( (double)t / CLOCKS_PER_SEC ) / 1000000 ),
-           12, printable_hashrate_cnt );
+  if( (t / 100) >= print_counter )
+  {
+    print_counter++;
+    // maybe breaking the control codes into macros is a good idea . . .
+    printf( "\x1b[1A\x1b[37mHash Rate: \x1b[38;5;27m%*.2f \x1b[37mMH/s   Total hashes: \x1b[38;5;27m%*llu\x1b[0m\n",
+            7, ( (double)printable_hashrate_cnt / ( (double)t / CLOCKS_PER_SEC ) / 1000000 ),
+            12, printable_hashrate_cnt );
+  }
   return ( h_done[0] == 1 );
 }
 
