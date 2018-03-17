@@ -138,14 +138,14 @@ void CUDASolver::updateGPULoop()
       && m_challenge.size() > 0
       && m_address.size() > 0 )
   {
-    // m_updated_gpu_inputs = false;
+    m_updated_gpu_inputs = false;
 
-    // if( s_target.length() < 66 )
-    // {
-    //   std::string zeros = std::string( 66 - s_target.length(), '0' );
-    //   std::string s = "0x" + zeros + s_target.substr( 2, s_target.length() );
-    //   s_target = s;
-    // }
+    if( s_target.length() < 66 )
+    {
+      std::string zeros = std::string( 66 - s_target.length(), '0' );
+      std::string s = "0x" + zeros + s_target.substr( 2, s_target.length() );
+      s_target = s;
+    }
 
     // uint8_t target_input[64];
     // bytes_t target_bytes( 32 );
@@ -171,8 +171,8 @@ void CUDASolver::updateGPULoop()
     // {
     //   hash_prefix[i + 32] = (uint8_t)m_address[i];
     // }
-    // update_mining_inputs( target_input, hash_prefix );
-    stop_solving();
+    update_mining_inputs();
+    // stop_solving();
   }
 }
 
@@ -214,7 +214,7 @@ CUDASolver::bytes_t CUDASolver::findSolution()
     s_target = s;
   }
 
-  uint8_t  target_input[64];
+  uint8_t target_input[64];
   bytes_t target_bytes( 32 );
 
   hexToBytes( s_target, target_bytes );
@@ -224,7 +224,7 @@ CUDASolver::bytes_t CUDASolver::findSolution()
     target_input[i] = (uint8_t)target_bytes[i];
   }
 
-  unsigned   char  hash_prefix[52];
+  unsigned char hash_prefix[52];
   std::string clean_challenge = s_challenge;
   bytes_t challenge_bytes( 32 );
 
@@ -247,9 +247,9 @@ CUDASolver::bytes_t CUDASolver::findSolution()
     find_message( target_input, hash_prefix );
   } while( !h_done[0] );
 
-  for( int32_t i = 52; i < 84; i++ )
+  for( int32_t i = 0; i < 32; i++ )
   {
-    byte_solution[i - 52] = (uint8_t)h_message[i];
+    byte_solution[i] = (uint8_t)h_message[i];
   }
 
   // What are these even here for?

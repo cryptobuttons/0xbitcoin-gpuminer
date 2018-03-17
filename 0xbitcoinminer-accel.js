@@ -38,7 +38,7 @@ module.exports = {
             CPPMiner.setHardwareType('cpu');
         }
 
-        console.log('\n')
+        //console.log('\n')
 
         //miningParameters
 
@@ -46,9 +46,9 @@ module.exports = {
             //if solo mining need a full account
             var eth_account = this.vault.getFullAccount();
 
-            if (eth_account.accountType == "readOnly" || eth_account.privateKey == null || typeof eth_account.privateKey == 'undefined ') {
-                console.log('The account ', eth_account.address, ' does not have an associated private key.  Please select another account or mine to a pool.');
-                console.log('\n')
+            if (eth_account.accountType == "readOnly" || eth_account.privateKey == null || typeof eth_account.privateKey == 'undefined') {
+                console.log('The account', eth_account.address, 'does not have an associated private key.  Please select another account or mine to a pool.');
+                //console.log('\n')
                 return;
             }
         } else if (this.miningStyle == "pool") {
@@ -57,11 +57,11 @@ module.exports = {
 
         if (eth_account == null || eth_account.address == null) {
             console.log("Please create a new account with 'account new' before solo mining.")
-            console.log('\n')
+            //console.log('\n')
             return false;
         } else {
-            console.log('Selected mining account:', '\n', eth_account.address);
-            console.log('\n')
+            console.log('Selected mining account:\n\n', eth_account.address);
+            //console.log('\n')
         }
 
         ///this.mining = true;
@@ -71,12 +71,12 @@ module.exports = {
         let miningParameters = {};
         await self.collectMiningParameters(this.minerEthAddress, miningParameters, self.miningStyle);
 
-        this.miningLogger.appendToStandardLog("Begin mining for " + this.minerEthAddress + " @ gasprice " + this.vault.getGasPriceGwei());
+        this.miningLogger.appendToStandardLog("Begin mining for" + this.minerEthAddress + "@ gasprice" + this.vault.getGasPriceGwei());
 
         console.log("Mining for  " + this.minerEthAddress);
 
         if (this.miningStyle != "pool") {
-            console.log("Gas price is " + this.vault.getGasPriceGwei() + ' gwei');
+            console.log("Gas price is" + this.vault.getGasPriceGwei() + 'gwei');
         }
 
         setInterval(() => { self.printMiningStats() }, PRINT_STATS_TIMEOUT);
@@ -132,7 +132,7 @@ module.exports = {
         if (this.challengeNumber != miningParameters.challengeNumber) {
             this.challengeNumber = miningParameters.challengeNumber
 
-            console.log("New challenge number: " + this.challengeNumber);
+            console.log("New challenge number:", this.challengeNumber);
             CPPMiner.setChallengeNumber(this.challengeNumber);
             bResume = true;
         }
@@ -147,7 +147,7 @@ module.exports = {
         if (this.miningDifficulty != miningParameters.miningDifficulty) {
             this.miningDifficulty = miningParameters.miningDifficulty
 
-            console.log("New difficulty: " + this.miningDifficulty);
+            console.log("New difficulty:", this.miningDifficulty);
         }
 
         if (bResume && !this.mining) {
@@ -155,7 +155,6 @@ module.exports = {
 
             try {
                 this.mineStuff(miningParameters);
-
             } catch (e) {
                 console.log(e)
             }
@@ -163,9 +162,8 @@ module.exports = {
     },
 
     //async submitNewMinedBlock(addressFrom, solution_number, digest_bytes, challenge_number)
-    async submitNewMinedBlock(addressFrom, minerEthAddress, solution_number, digest_bytes, challenge_number, target, difficulty)
-    {
-        this.miningLogger.appendToStandardLog("Giving mined solution to network interface " + challenge_number);
+    async submitNewMinedBlock(addressFrom, minerEthAddress, solution_number, digest_bytes, challenge_number, target, difficulty) {
+        //this.miningLogger.appendToStandardLog("Giving mined solution to network interface " + challenge_number);
 
         this.networkInterface.queueMiningSolution(addressFrom, minerEthAddress, solution_number, digest_bytes, challenge_number, target, difficulty)
     },
@@ -192,10 +190,10 @@ module.exports = {
             const digest = web3utils.sha3(challenge_number + addressFrom.substring(2) + solution_number.substring(2));
             const digestBigNumber = web3utils.toBN(digest);
             if (digestBigNumber.lte(miningParameters.miningTarget)) {
-                console.log('\x1b[2ASubmit mined solution for challenge ', challenge_number, '\n\n');
+                console.log('Submit mined solution for challenge ', challenge_number);
                 //  self.submitNewMinedBlock(minerEthAddress, solution_number, digest, challenge_number);
-                self.submitNewMinedBlock(addressFrom, minerEthAddress, solution_number, digest, challenge_number, target, difficulty)
-            } else {
+                return self.submitNewMinedBlock(addressFrom, minerEthAddress, solution_number, digest, challenge_number, target, difficulty)
+//            } else {
 //                console.error("Verification failed!\n",
 //                    "challenge: ", challenge_number, "\n",
 //                    "address: ", minerEthAddress, "\n",
@@ -226,7 +224,7 @@ module.exports = {
 
     setHardwareType(type) {
         hardwareType = type;
-        console.log('Set hardware type: ', type)
+        console.log('Set hardware type:', type)
     },
 
     setNetworkInterface(netInterface) {

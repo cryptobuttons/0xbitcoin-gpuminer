@@ -402,11 +402,6 @@ void stop_solving()
 __host__
 void gpu_init()
 {
-  if( gpu_initialized ) return;
-
-  cudaDeviceReset();
-  cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
-
   cudaDeviceProp device_prop;
   int32_t device_count;
   start = clock();
@@ -431,28 +426,42 @@ void gpu_init()
 
   cudaGetDeviceCount( &device_count );
 
-  if( cudaGetDeviceProperties( &device_prop, cuda_device ) != cudaSuccess )
+  cudaError_t cudaerr = cudaGetDeviceProperties( &device_prop, cuda_device );
+  if( cudaerr != cudaSuccess )
   {
-    printf( "Problem getting properties for device, exiting...\n" );
+    printf( "While getting properties for device %u, error %d was encountered: %s\n",
+            cuda_device, cudaerr, cudaGetErrorString( cudaerr ) );
     exit( EXIT_FAILURE );
   }
 
   cudaSetDevice( cuda_device );
+
+  if( !gpu_initialized )
+  {
+    // cudaDeviceReset();
+    // cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
+
+    cudaMalloc( (void**)&d_done, sizeof( int32_t ) );
+    cudaMalloc( (void**)&d_solution, 32 ); // solution
+    cudaMallocHost( (void**)&h_message, 32 );
+
+    (uint32_t&)(h_init_message[52]) = 014533075101u;
+    (uint32_t&)(h_init_message[56]) = 014132271150u;
+    for(int8_t i_rand = 60; i_rand < 84; i_rand++){
+      h_init_message[i_rand] = (uint8_t)rand() % 256;
+    }
+
+    gpu_initialized = true;
+  }
 
   compute_version = device_prop.major * 100 + device_prop.minor * 10;
 
   // convert from GHz to hertz
   clock_speed = (int32_t)( device_prop.memoryClockRate * 1000 * 1000 );
 
-  cudaMalloc( (void**)&d_done, sizeof( int32_t ) );
-  cudaMalloc( (void**)&d_solution, 32 ); // solution
-  cudaMallocHost( (void**)&h_message, 32 );
-
   //cnt = 0;
   printable_hashrate_cnt = 0;
   print_counter = 0;
-
-  gpu_initialized = true;
 }
 
 __host__
@@ -469,21 +478,29 @@ uint64_t getHashCount()
 __host__
 void resetHashCount()
 {
-  //cnt = 0;
-  printable_hashrate_cnt = 0;
+  cnt = 0;
+  // printable_hashrate_cnt = 0;
 }
 
 __host__
-void update_mining_inputs( uint8_t * challenge_target, uint8_t * hash_prefix )
+void update_mining_inputs()// uint8_t * challenge_target, uint8_t * hash_prefix )
 {
-  cudaMemcpy( d_done, h_done, sizeof( int32_t ), cudaMemcpyHostToDevice );
-  cudaMemset( d_solution, 0xff, 32 );
+  // cudaMemcpy( d_done, h_done, sizeof( int32_t ), cudaMemcpyHostToDevice );
+  // cudaMemset( d_solution, 0xff, 32 );
 }
 
 __host__
 bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
 {
   h_done[0] = 0;
+  if( !gpu_initialized )
+  {
+    gpu_init();
+  }
+
+  memcpy( h_init_message, hash_prefix, 52 );
+  cudaMemcpyToSymbol( init_message, h_init_message, 84, cuda_device, cudaMemcpyHostToDevice );
+  cudaMemcpyToSymbol( challenge, challenge_target, 32, cuda_device, cudaMemcpyHostToDevice );
 
   cudaMemcpy( d_done, h_done, sizeof( int32_t ), cudaMemcpyHostToDevice );
   cudaMemset( d_solution, 0xff, 32 );
@@ -503,13 +520,6 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
     grid.x = ( threads + tpb - 1 ) / tpb;
   }
   const dim3 block( tpb );
-
-  memcpy( h_init_message, hash_prefix, 52 );
-  for(int32_t i_rand = 52; i_rand < 84; i_rand++){
-    h_init_message[i_rand] = (uint8_t)(rand() % 256);
-  }
-  cudaMemcpyToSymbol( init_message, h_init_message, 84, 0, cudaMemcpyHostToDevice );
-  cudaMemcpyToSymbol( challenge, challenge_target, 32, 0, cudaMemcpyHostToDevice );
 
   gpu_mine <<< grid, block >>> ( d_solution, d_done, cnt, threads );
   // cudaError_t cudaerr = cudaDeviceSynchronize();
@@ -540,6 +550,8 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
 __host__
 void gpu_cleanup()
 {
+  if( !gpu_initialized ) return;
+
   cudaThreadSynchronize();
 
   cudaFree( d_done );
