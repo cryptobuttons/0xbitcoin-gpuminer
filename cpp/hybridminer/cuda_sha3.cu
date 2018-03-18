@@ -373,7 +373,7 @@ __global__ __launch_bounds__( TPB50, 2 )
   if( thread < threads )
   {
 #endif
-    (uint64_t&)(message[52]) = nounce;
+    (uint64_t&)(message[60]) = nounce;
 
     uint8_t output[32];
     keccak( message, output );
@@ -438,8 +438,8 @@ void gpu_init()
 
   if( !gpu_initialized )
   {
-    // cudaDeviceReset();
-    // cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
+    cudaDeviceReset();
+    cudaSetDeviceFlags( cudaDeviceScheduleBlockingSync );
 
     cudaMalloc( (void**)&d_done, sizeof( int32_t ) );
     cudaMalloc( (void**)&d_solution, 32 ); // solution
