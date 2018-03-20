@@ -48,12 +48,14 @@ private:
   std::string s_target;
   bytes_t m_address;
   bytes_t m_challenge;
+  uint64_t m_diff, m_diff_tmp;
   bytes_t m_target, m_target_tmp;
   bytes_t m_buffer, m_buffer_tmp;
   std::mutex m_buffer_mutex;
   std::mutex m_target_mutex;
   std::atomic<bool> m_buffer_ready;
   std::atomic<bool> m_target_ready;
+  std::atomic<bool> m_diff_ready;
 
   std::atomic<bool> m_updated_gpu_inputs;
 };

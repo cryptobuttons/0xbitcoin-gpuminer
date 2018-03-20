@@ -64,7 +64,6 @@ uint8_t* d_solution;
 
 uint8_t* d_challenge;
 // uint8_t* d_hash_prefix;
-__constant__ uint8_t challenge[32];
 __constant__ uint8_t init_message[84];
 
 #define ROTL64(x, y) (((x) << (y)) | ((x) >> (64 - (y))))
@@ -80,62 +79,66 @@ __device__ __constant__ const uint64_t RC[24] = {
     0x8000000000008080, 0x0000000080000001, 0x8000000080008008
 };
 
-__device__ __constant__ const int32_t r[24] = {
-    1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
-    27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44
-};
-
-__device__ __constant__ const int32_t piln[24] = {
-    10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
-    15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1
-};
+__device__ __forceinline__
+uint64_t bswap_64( uint64_t x )
+{
+	uint64_t result;
+	//result = __byte_perm((uint32_t) x, 0, 0x0123);
+	//return (result << 32) + __byte_perm(_HIDWORD(x), 0, 0x0123);
+	asm( "{ .reg .b32 x, y;"
+		   "mov.b64 {x,y}, %1;"
+		   "prmt.b32 x, x, 0, 0x0123;"
+		   "prmt.b32 y, y, 0, 0x0123;"
+		   "mov.b64 %0, {y,x};"
+	     "}" : "=l"(result): "l"(x));
+	return result;
+}
 
 __device__ __forceinline__
-int32_t compare_hash( uint8_t *hash )
+uint64_t xor5( uint64_t a, uint64_t b, uint64_t c, uint64_t d, uint64_t e )
 {
-  int32_t i = 0;
-  for( i = 0; i < 32; i++ )
-  {
-    if( hash[i] != challenge[i] ) break;
-  }
-  return hash[i] < challenge[i];
+  uint64_t output;
+  asm( "xor.b64 %0, %1, %2;" : "=l"(output) : "l"(d) ,"l"(e) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"(output) : "l"(c) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"(output) : "l"(b) );
+  asm( "xor.b64 %0, %0, %1;" : "+l"(output) : "l"(a) );
+  return output;
 }
 
 __device__
-void keccak( uint8_t *message, uint8_t *output )
+bool keccak( uint8_t *message, uint64_t target )
 {
   uint64_t state[25];
 
   memset( state, 0, sizeof( state ) );
-
-  // last block and padding
-  message[84] = 1;
-  memset( &message[85], 0, 51 );
-  message[135] |= 0x80;
 
   for( int32_t i = 0; i < 17; i++ )
   {
     state[i] ^= ( (uint64_t *)message )[i];
   }
 
-  uint64_t temp, C[5], D[5];
-  int32_t j;
+  int32_t x;
 
-  for( int32_t i = 0; i < 24; i++ )
+#if __CUDA_ARCH__ >= 600
+  uint64_t C[5], D[5];
+#pragma unroll 23
+#else
+  uint64_t C[5], D;
+#endif
+  for( int32_t i = 0; i < 23; i++ )
   {
     // Theta
     // for i = 0 to 5
     //    C[i] = state[i] ^ state[i + 5] ^ state[i + 10] ^ state[i + 15] ^ state[i + 20];
-    uint32_t x;
     for (x = 0; x < 5; x++) {
-      C[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+      C[x] = xor5( state[x], state[x + 5], state[x + 10], state[x + 15], state[x + 20] );
     }
-
 
     // for i = 0 to 5
     //     temp = C[(i + 4) % 5] ^ ROTL64(C[(i + 1) % 5], 1);
     //     for j = 0 to 25, j += 5
     //          state[j + i] ^= temp;
+#if __CUDA_ARCH__ >= 600
     D[0] = ROTL64(C[1], 1) ^ C[4];
     D[1] = ROTL64(C[2], 1) ^ C[0];
     D[2] = ROTL64(C[3], 1) ^ C[1];
@@ -149,7 +152,42 @@ void keccak( uint8_t *message, uint8_t *output )
       state[x + 15] ^= D[x];
       state[x + 20] ^= D[x];
     }
+#else
+    D = ROTL64(C[1], 1) ^ C[4];
+    state[ 0] ^= D;
+    state[ 5] ^= D;
+    state[10] ^= D;
+    state[15] ^= D;
+    state[20] ^= D;
 
+    D = ROTL64(C[2], 1) ^ C[0];
+    state[ 1] ^= D;
+    state[ 6] ^= D;
+    state[11] ^= D;
+    state[16] ^= D;
+    state[21] ^= D;
+
+    D = ROTL64(C[3], 1) ^ C[1];
+    state[ 2] ^= D;
+    state[ 7] ^= D;
+    state[12] ^= D;
+    state[17] ^= D;
+    state[22] ^= D;
+
+    D = ROTL64(C[4], 1) ^ C[2];
+    state[ 3] ^= D;
+    state[ 8] ^= D;
+    state[13] ^= D;
+    state[18] ^= D;
+    state[23] ^= D;
+
+    D = ROTL64(C[0], 1) ^ C[3];
+    state[ 4] ^= D;
+    state[ 9] ^= D;
+    state[14] ^= D;
+    state[19] ^= D;
+    state[24] ^= D;
+#endif
 
     // Rho Pi
     // for i = 0 to 24
@@ -157,126 +195,31 @@ void keccak( uint8_t *message, uint8_t *output )
     //     C[0] = state[j];
     //     state[j] = ROTL64(temp, r[i]);
     //     temp = C[0];
-    temp = state[1];
-    j = piln[0];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[0] );
-    temp = C[0];
-
-    j = piln[1];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[1] );
-    temp = C[0];
-
-    j = piln[2];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[2] );
-    temp = C[0];
-
-    j = piln[3];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[3] );
-    temp = C[0];
-
-    j = piln[4];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[4] );
-    temp = C[0];
-
-    j = piln[5];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[5] );
-    temp = C[0];
-
-    j = piln[6];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[6] );
-    temp = C[0];
-
-    j = piln[7];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[7] );
-    temp = C[0];
-
-    j = piln[8];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[8] );
-    temp = C[0];
-
-    j = piln[9];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[9] );
-    temp = C[0];
-
-    j = piln[10];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[10] );
-    temp = C[0];
-
-    j = piln[11];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[11] );
-    temp = C[0];
-
-    j = piln[12];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[12] );
-    temp = C[0];
-
-    j = piln[13];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[13] );
-    temp = C[0];
-
-    j = piln[14];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[14] );
-    temp = C[0];
-
-    j = piln[15];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[15] );
-    temp = C[0];
-
-    j = piln[16];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[16] );
-    temp = C[0];
-
-    j = piln[17];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[17] );
-    temp = C[0];
-
-    j = piln[18];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[18] );
-    temp = C[0];
-
-    j = piln[19];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[19] );
-    temp = C[0];
-
-    j = piln[20];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[20] );
-    temp = C[0];
-
-    j = piln[21];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[21] );
-    temp = C[0];
-
-    j = piln[22];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[22] );
-    temp = C[0];
-
-    j = piln[23];
-    C[0] = state[j];
-    state[j] = ROTL64( temp, r[23] );
-    temp = C[0];
+    C[0] = state[1];
+    state[ 1] = ROTL64( state[ 6], 44 );
+    state[ 6] = ROTL64( state[ 9], 20 );
+    state[ 9] = ROTL64( state[22], 61 );
+    state[22] = ROTL64( state[14], 39 );
+    state[14] = ROTL64( state[20], 18 );
+    state[20] = ROTL64( state[ 2], 62 );
+    state[ 2] = ROTL64( state[12], 43 );
+    state[12] = ROTL64( state[13], 25 );
+    state[13] = ROTL64( state[19],  8 );
+    state[19] = ROTL64( state[23], 56 );
+    state[23] = ROTL64( state[15], 41 );
+    state[15] = ROTL64( state[ 4], 27 );
+    state[ 4] = ROTL64( state[24], 14 );
+    state[24] = ROTL64( state[21],  2 );
+    state[21] = ROTL64( state[ 8], 55 );
+    state[ 8] = ROTL64( state[16], 45 );
+    state[16] = ROTL64( state[ 5], 36 );
+    state[ 5] = ROTL64( state[ 3], 28 );
+    state[ 3] = ROTL64( state[18], 21 );
+    state[18] = ROTL64( state[17], 15 );
+    state[17] = ROTL64( state[11], 10 );
+    state[11] = ROTL64( state[ 7],  6 );
+    state[ 7] = ROTL64( state[10],  3 );
+    state[10] = ROTL64( C[0], 1 );
 
     //  Chi
     // for j = 0 to 25, j += 5
@@ -284,70 +227,65 @@ void keccak( uint8_t *message, uint8_t *output )
     //         C[i] = state[j + i];
     //     for i = 0 to 5
     //         state[j + 1] ^= (~C[(i + 1) % 5]) & C[(i + 2) % 5];
-    C[0] = state[0];
-    C[1] = state[1];
-    C[2] = state[2];
-    C[3] = state[3];
-    C[4] = state[4];
+    C[0] = state[ 0];
+    C[1] = state[ 1];
+    state[ 0] ^= ( ~state[1] ) & state[2];
+    state[ 1] ^= ( ~state[2] ) & state[3];
+    state[ 2] ^= ( ~state[3] ) & state[4];
+    state[ 3] ^= ( ~state[4] ) & C[0];
+    state[ 4] ^= ( ~C[0] ) & C[1];
 
-    state[0] ^= ( ~C[1] ) & C[2];
-    state[1] ^= ( ~C[2] ) & C[3];
-    state[2] ^= ( ~C[3] ) & C[4];
-    state[3] ^= ( ~C[4] ) & C[0];
-    state[4] ^= ( ~C[0] ) & C[1];
-
-    C[0] = state[5];
-    C[1] = state[6];
-    C[2] = state[7];
-    C[3] = state[8];
-    C[4] = state[9];
-
-    state[5] ^= ( ~C[1] ) & C[2];
-    state[6] ^= ( ~C[2] ) & C[3];
-    state[7] ^= ( ~C[3] ) & C[4];
-    state[8] ^= ( ~C[4] ) & C[0];
-    state[9] ^= ( ~C[0] ) & C[1];
+    C[0] = state[ 5];
+    C[1] = state[ 6];
+    state[ 5] ^= ( ~state[6] ) & state[7];
+    state[ 6] ^= ( ~state[7] ) & state[8];
+    state[ 7] ^= ( ~state[8] ) & state[9];
+    state[ 8] ^= ( ~state[9] ) & C[0];
+    state[ 9] ^= ( ~C[0] ) & C[1];
 
     C[0] = state[10];
     C[1] = state[11];
-    C[2] = state[12];
-    C[3] = state[13];
-    C[4] = state[14];
-
-    state[10] ^= ( ~C[1] ) & C[2];
-    state[11] ^= ( ~C[2] ) & C[3];
-    state[12] ^= ( ~C[3] ) & C[4];
-    state[13] ^= ( ~C[4] ) & C[0];
+    state[10] ^= ( ~state[11] ) & state[12];
+    state[11] ^= ( ~state[12] ) & state[13];
+    state[12] ^= ( ~state[13] ) & state[14];
+    state[13] ^= ( ~state[14] ) & C[0];
     state[14] ^= ( ~C[0] ) & C[1];
 
     C[0] = state[15];
     C[1] = state[16];
-    C[2] = state[17];
-    C[3] = state[18];
-    C[4] = state[19];
-
-    state[15] ^= ( ~C[1] ) & C[2];
-    state[16] ^= ( ~C[2] ) & C[3];
-    state[17] ^= ( ~C[3] ) & C[4];
-    state[18] ^= ( ~C[4] ) & C[0];
+    state[15] ^= ( ~state[16] ) & state[17];
+    state[16] ^= ( ~state[17] ) & state[18];
+    state[17] ^= ( ~state[18] ) & state[19];
+    state[18] ^= ( ~state[19] ) & C[0];
     state[19] ^= ( ~C[0] ) & C[1];
 
     C[0] = state[20];
     C[1] = state[21];
-    C[2] = state[22];
-    C[3] = state[23];
-    C[4] = state[24];
-
-    state[20] ^= ( ~C[1] ) & C[2];
-    state[21] ^= ( ~C[2] ) & C[3];
-    state[22] ^= ( ~C[3] ) & C[4];
-    state[23] ^= ( ~C[4] ) & C[0];
+    state[20] ^= ( ~state[21] ) & state[22];
+    state[21] ^= ( ~state[22] ) & state[23];
+    state[22] ^= ( ~state[23] ) & state[24];
+    state[23] ^= ( ~state[24] ) & C[0];
     state[24] ^= ( ~C[0] ) & C[1];
 
     //  Iota
     state[0] ^= RC[i];
   }
-  memcpy( output, state, 32 );
+  for (x = 0; x < 5; x++) {
+    C[x] = xor5( state[x], state[x + 5], state[x + 10], state[x + 15], state[x + 20] );
+  }
+
+  state[ 0] ^= ROTL64(C[1], 1) ^ C[4];
+  state[ 6] ^= ROTL64(C[2], 1) ^ C[0];
+  state[12] ^= ROTL64(C[3], 1) ^ C[1];
+
+  state[ 1] = ROTL64( state[ 6], 44 );
+  state[ 2] = ROTL64( state[12], 43 );
+
+  state[ 0] ^= ( ~state[1] ) & state[2];
+
+  state[0] ^= RC[23];
+
+  return bswap_64( state[0] ) <= target;
 }
 
 // hash length is 256 bits
@@ -356,13 +294,15 @@ __global__ __launch_bounds__( TPB52, 1 )
 #else
 __global__ __launch_bounds__( TPB50, 2 )
 #endif
-  void gpu_mine( uint8_t* solution, int32_t* done, uint64_t cnt, uint32_t threads )
+void gpu_mine( uint8_t* solution, int32_t* done, uint64_t cnt, uint32_t threads, uint64_t target )
 {
   uint32_t thread = blockDim.x * blockIdx.x + threadIdx.x;
   uint8_t message[144];
   memcpy(message, init_message, 84);
+  message[84] = 1;
+  memset( &message[85], 0, 51 );
+  message[135] |= 0x80;
 
-  //uint2 s[25], t[5], v, w, u[5];
 #if __CUDA_ARCH__ > 500
   uint64_t step = gridDim.x * blockDim.x;
   uint64_t maxNonce = cnt + threads;
@@ -375,14 +315,11 @@ __global__ __launch_bounds__( TPB50, 2 )
 #endif
     (uint64_t&)(message[60]) = nounce;
 
-    uint8_t output[32];
-    keccak( message, output );
-
-    if( compare_hash( output ) )
+    if( keccak( message, target ) )
     {
-      if( done[0] != 1 )
+      const uint32_t temp = atomicExch( &done[0], thread );
+      if( done[0] == thread )
       {
-        done[0] = 1;
         memcpy( solution, &message[52], 32 );
       }
       return;
@@ -490,7 +427,7 @@ void update_mining_inputs()// uint8_t * challenge_target, uint8_t * hash_prefix 
 }
 
 __host__
-bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
+bool find_message( uint64_t target, uint8_t * hash_prefix )
 {
   h_done[0] = 0;
   if( !gpu_initialized )
@@ -500,7 +437,6 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
 
   memcpy( h_init_message, hash_prefix, 52 );
   cudaMemcpyToSymbol( init_message, h_init_message, 84, cuda_device, cudaMemcpyHostToDevice );
-  cudaMemcpyToSymbol( challenge, challenge_target, 32, cuda_device, cudaMemcpyHostToDevice );
 
   cudaMemcpy( d_done, h_done, sizeof( int32_t ), cudaMemcpyHostToDevice );
   cudaMemset( d_solution, 0xff, 32 );
@@ -521,7 +457,7 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
   }
   const dim3 block( tpb );
 
-  gpu_mine <<< grid, block >>> ( d_solution, d_done, cnt, threads );
+  gpu_mine <<< grid, block >>> ( d_solution, d_done, cnt, threads, target );
   // cudaError_t cudaerr = cudaDeviceSynchronize();
   // if( cudaerr != cudaSuccess )
   // {
@@ -540,11 +476,11 @@ bool find_message( uint8_t * challenge_target, uint8_t * hash_prefix )
   {
     print_counter++;
     // maybe breaking the control codes into macros is a good idea . . .
-    printf( "\x1b[1A\x1b[37mHash Rate: \x1b[38;5;27m%*.2f \x1b[37mMH/s   Total hashes: \x1b[38;5;27m%*llu\x1b[0m\n",
+    printf( "\x1b[1AHash Rate: %*.2f MH/s   Total hashes: %*llu\n",
             7, ( (double)printable_hashrate_cnt / ( (double)t / CLOCKS_PER_SEC ) / 1000000 ),
             12, printable_hashrate_cnt );
   }
-  return ( h_done[0] == 1 );
+  return ( h_done[0] != 0 );
 }
 
 __host__

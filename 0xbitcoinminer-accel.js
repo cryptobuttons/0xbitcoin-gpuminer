@@ -14,6 +14,8 @@ const PRINT_STATS_TIMEOUT = 5000;
 const COLLECT_MINING_PARAMS_TIMEOUT = 4000;
 var hardwareType = 'cuda'; //default
 
+var solutionsSubmitted = 0;
+
 module.exports = {
     async init(web3, vault, miningLogger)
     //  async init(web3, subsystem_command, vault, networkInterface, miningLogger)
@@ -47,7 +49,7 @@ module.exports = {
             var eth_account = this.vault.getFullAccount();
 
             if (eth_account.accountType == "readOnly" || eth_account.privateKey == null || typeof eth_account.privateKey == 'undefined') {
-                console.log('The account', eth_account.address, 'does not have an associated private key.  Please select another account or mine to a pool.');
+                console.log('The account', eth_account.address, 'does not have an associated private key. Please select another account or mine to a pool.');
                 //console.log('\n')
                 return;
             }
@@ -60,7 +62,7 @@ module.exports = {
             //console.log('\n')
             return false;
         } else {
-            console.log('Selected mining account:\n\n', eth_account.address);
+            console.log('Selected mining account:\n\t', eth_account.address);
             //console.log('\n')
         }
 
@@ -71,12 +73,12 @@ module.exports = {
         let miningParameters = {};
         await self.collectMiningParameters(this.minerEthAddress, miningParameters, self.miningStyle);
 
-        this.miningLogger.appendToStandardLog("Begin mining for" + this.minerEthAddress + "@ gasprice" + this.vault.getGasPriceGwei());
+        this.miningLogger.appendToStandardLog("Begin mining for " + this.minerEthAddress + " @ gasprice " + this.vault.getGasPriceGwei());
 
-        console.log("Mining for  " + this.minerEthAddress);
+        console.log("Mining for", this.minerEthAddress);
 
         if (this.miningStyle != "pool") {
-            console.log("Gas price is" + this.vault.getGasPriceGwei() + 'gwei');
+            console.log("Gas price is", this.vault.getGasPriceGwei(), 'gwei');
         }
 
         setInterval(() => { self.printMiningStats() }, PRINT_STATS_TIMEOUT);
@@ -132,22 +134,24 @@ module.exports = {
         if (this.challengeNumber != miningParameters.challengeNumber) {
             this.challengeNumber = miningParameters.challengeNumber
 
-            console.log("New challenge number:", this.challengeNumber);
+            //console.log("New challenge received");
             CPPMiner.setChallengeNumber(this.challengeNumber);
             bResume = true;
+            console.log("Got new challenge from pool: " + this.challengeNumber.substring(2, 10));
         }
 
         if (this.miningTarget == null || !this.miningTarget.eq(miningParameters.miningTarget)) {
             this.miningTarget = miningParameters.miningTarget
 
-            console.log("New mining target: 0x" + this.miningTarget.toString(16));
-            CPPMiner.setDifficultyTarget("0x" + this.miningTarget.toString(16));
+            console.log("New mining target set");
+            CPPMiner.setDifficultyTarget("0x" + this.miningTarget.toString(16, 64));
         }
 
         if (this.miningDifficulty != miningParameters.miningDifficulty) {
             this.miningDifficulty = miningParameters.miningDifficulty
 
-            console.log("New difficulty:", this.miningDifficulty);
+            console.log("New difficulty set", this.miningDifficulty);
+            //CPPMiner.setDifficulty( parseInt( this.miningTarget.toString(16, 64).substring(0, 16), 16 ) );
         }
 
         if (bResume && !this.mining) {
@@ -187,19 +191,23 @@ module.exports = {
 
         const verifyAndSubmit = (solution_number) => {
             const challenge_number = miningParameters.challengeNumber;
-            const digest = web3utils.sha3(challenge_number + addressFrom.substring(2) + solution_number.substring(2));
+            const digest = web3utils.soliditySha3(challenge_number,
+                                                  addressFrom.substring(2),
+                                                  solution_number);
             const digestBigNumber = web3utils.toBN(digest);
             if (digestBigNumber.lte(miningParameters.miningTarget)) {
-                console.log('Submit mined solution for challenge ', challenge_number);
+                solutionsSubmitted++;
+                console.log("Submitting solution #" + solutionsSubmitted);
                 //  self.submitNewMinedBlock(minerEthAddress, solution_number, digest, challenge_number);
-                return self.submitNewMinedBlock(addressFrom, minerEthAddress, solution_number, digest, challenge_number, target, difficulty)
-//            } else {
-//                console.error("Verification failed!\n",
-//                    "challenge: ", challenge_number, "\n",
-//                    "address: ", minerEthAddress, "\n",
-//                    "solution: ", solution_number, "\n",
-//                    "digest: ", digestBigNumber, "\n",
-//                    "target: ", target);
+                return self.submitNewMinedBlock(addressFrom, minerEthAddress, solution_number,
+                                                digest, challenge_number, target, difficulty)
+            //} else {
+            //    console.error("Verification failed!\n",
+            //                  "challenge:", challenge_number, "\n",
+            //                  "address:", addressFrom, "\n",
+            //                  "solution:", solution_number, "\n",
+            //                  "digest:", digest, "\n",
+            //                  "target:", miningParameters.miningTarget);
             }
         }
 
@@ -224,7 +232,7 @@ module.exports = {
 
     setHardwareType(type) {
         hardwareType = type;
-        console.log('Set hardware type:', type)
+        console.log("Set hardware type:", type)
     },
 
     setNetworkInterface(netInterface) {
