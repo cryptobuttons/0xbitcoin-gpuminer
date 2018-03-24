@@ -48,7 +48,8 @@ int32_t cuda_device;
 int32_t clock_speed;
 int32_t compute_version;
 int32_t h_done[1] = { 0 };
-clock_t start;
+//clock_t start;
+struct timespec time_start, time_finish;
 
 uint64_t cnt;
 uint64_t printable_hashrate_cnt;
@@ -341,7 +342,9 @@ void gpu_init()
 {
   cudaDeviceProp device_prop;
   int32_t device_count;
-  start = clock();
+  //start = clock();
+  // CLOCK_MONOTONIC not available on windows
+  clock_gettime(CLOCK_MONOTONIC, &time_start);
   
   srand((time(NULL) & 0xFFFF) | (getpid() << 16));
 
@@ -470,14 +473,16 @@ bool find_message( uint64_t target, uint8_t * hash_prefix )
   cudaMemcpy( h_done, d_done, sizeof( int32_t ), cudaMemcpyDeviceToHost );
   cudaMemcpy( h_message, d_solution, 32, cudaMemcpyDeviceToHost );
 
-  clock_t t = clock() - start;
+  //clock_t t = clock() - start;
+  clock_gettime(CLOCK_MONOTONIC, &time_finish);
+  double elapsed = (time_finish.tv_sec - time_start.tv_sec);
 
-  if( (t / 100) >= print_counter )
+  if( elapsed >= print_counter )
   {
     print_counter++;
     // maybe breaking the control codes into macros is a good idea . . .
     printf( "\x1b[1AHash Rate: %*.2f MH/s   Total hashes: %*llu\n",
-            7, ( (double)printable_hashrate_cnt / ( (double)t / CLOCKS_PER_SEC ) / 1000000 ),
+            7, ( (double)printable_hashrate_cnt / elapsed / 1000000 ),
             12, printable_hashrate_cnt );
   }
   return ( h_done[0] != 0 );
